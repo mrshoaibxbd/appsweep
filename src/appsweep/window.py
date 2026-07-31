@@ -4,6 +4,7 @@ from functools import partial
 from gi.repository import Adw, GLib, Gtk
 
 from appsweep.apt_scanner import AptScanner
+from appsweep.backup_manager import BackupManager, BackupResult
 from appsweep.models import InstalledApplication
 from appsweep.removal_analyzer import RemovalAnalysis, RemovalAnalyzer
 
@@ -18,8 +19,8 @@ class AppSweepWindow(Adw.ApplicationWindow):
 
         self._scanner = AptScanner()
         self._analyzer = RemovalAnalyzer()
+        self._backup_manager = BackupManager()
         self._executor = ThreadPoolExecutor(max_workers=1)
-        self._applications: list[InstalledApplication] = []
 
         self._stack = Gtk.Stack()
         self._stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
@@ -38,10 +39,10 @@ class AppSweepWindow(Adw.ApplicationWindow):
         self.connect("close-request", self._on_close_request)
 
     def _build_status_page(self) -> Adw.StatusPage:
-        status_page = Adw.StatusPage()
-        status_page.set_icon_name("user-trash-symbolic")
-        status_page.set_title("AppSweep")
-        status_page.set_description(
+        page = Adw.StatusPage()
+        page.set_icon_name("user-trash-symbolic")
+        page.set_title("AppSweep")
+        page.set_description(
             "Safely remove applications and review associated data before deletion."
         )
 
@@ -51,8 +52,8 @@ class AppSweepWindow(Adw.ApplicationWindow):
         self._scan_button.set_halign(Gtk.Align.CENTER)
         self._scan_button.connect("clicked", self._on_scan_clicked)
 
-        status_page.set_child(self._scan_button)
-        return status_page
+        page.set_child(self._scan_button)
+        return page
 
     def _build_applications_page(self) -> Gtk.Box:
         page = Gtk.Box(
@@ -104,7 +105,6 @@ class AppSweepWindow(Adw.ApplicationWindow):
         self,
         applications: list[InstalledApplication],
     ) -> bool:
-        self._applications = applications
         self._clear_list()
 
         for application in applications:
@@ -119,14 +119,7 @@ class AppSweepWindow(Adw.ApplicationWindow):
     def _show_scan_error(self, message: str) -> bool:
         self._scan_button.set_sensitive(True)
         self._scan_button.set_label("Scan installed applications")
-
-        dialog = Adw.AlertDialog(
-            heading="Unable to scan applications",
-            body=message,
-        )
-        dialog.add_response("close", "Close")
-        dialog.present(self)
-
+        self._show_message("Unable to scan applications", message)
         return GLib.SOURCE_REMOVE
 
     def _create_application_row(
@@ -147,18 +140,18 @@ class AppSweepWindow(Adw.ApplicationWindow):
         icon.set_pixel_size(32)
         row.add_prefix(icon)
 
-        review_button = Gtk.Button()
-        review_button.set_icon_name("go-next-symbolic")
-        review_button.set_tooltip_text("Review application")
-        review_button.set_valign(Gtk.Align.CENTER)
-        review_button.add_css_class("flat")
-        review_button.connect(
+        button = Gtk.Button()
+        button.set_icon_name("go-next-symbolic")
+        button.set_tooltip_text("Review application")
+        button.set_valign(Gtk.Align.CENTER)
+        button.add_css_class("flat")
+        button.connect(
             "clicked",
             partial(self._on_review_clicked, application),
         )
 
-        row.add_suffix(review_button)
-        row.set_activatable_widget(review_button)
+        row.add_suffix(button)
+        row.set_activatable_widget(button)
         row.application = application
 
         return row
@@ -170,7 +163,6 @@ class AppSweepWindow(Adw.ApplicationWindow):
     ) -> None:
         button.set_sensitive(False)
         button.set_icon_name("content-loading-symbolic")
-
         self._executor.submit(
             self._run_removal_analysis,
             application,
@@ -212,53 +204,43 @@ class AppSweepWindow(Adw.ApplicationWindow):
             application.summary or "No application description is available.",
             (
                 f"Package\n{analysis.package_name}\n\n"
-                f"Installed size\n"
-                f"{self._format_size(analysis.installed_size)}"
+                f"Installed size\n{self._format_size(analysis.installed_size)}"
+            ),
+            (
+                "Additional packages APT would remove\n"
+                + (
+                    "\n".join(analysis.additional_removals)
+                    if analysis.additional_removals
+                    else "None"
+                )
+            ),
+            (
+                "Installed packages referencing this package\n"
+                + (
+                    "\n".join(analysis.dependent_packages)
+                    if analysis.dependent_packages
+                    else "None detected"
+                )
+            ),
+            (
+                "Verified user-data paths\n"
+                + (
+                    "\n".join(str(path) for path in analysis.leftover_paths)
+                    if analysis.leftover_paths
+                    else "None detected"
+                )
             ),
         ]
-
-        if analysis.additional_removals:
-            sections.append(
-                "Additional packages APT would remove\n"
-                + "\n".join(analysis.additional_removals)
-            )
-        else:
-            sections.append(
-                "Additional packages APT would remove\nNone"
-            )
-
-        if analysis.dependent_packages:
-            sections.append(
-                "Installed packages referencing this package\n"
-                + "\n".join(analysis.dependent_packages)
-            )
-        else:
-            sections.append(
-                "Installed packages referencing this package\nNone detected"
-            )
-
-        if analysis.leftover_paths:
-            sections.append(
-                "Verified user-data paths\n"
-                + "\n".join(
-                    str(path)
-                    for path in analysis.leftover_paths
-                )
-            )
-        else:
-            sections.append(
-                "Verified user-data paths\nNone detected"
-            )
 
         dialog = Adw.AlertDialog(
             heading=f"Review {application.display_name}",
             body="\n\n".join(sections),
         )
         dialog.add_response("close", "Close")
-        dialog.add_response("continue", "Continue")
+        dialog.add_response("backup", "Create rollback backup")
         dialog.set_response_appearance(
-            "continue",
-            Adw.ResponseAppearance.DESTRUCTIVE,
+            "backup",
+            Adw.ResponseAppearance.SUGGESTED,
         )
         dialog.set_default_response("close")
         dialog.set_close_response("close")
@@ -281,14 +263,7 @@ class AppSweepWindow(Adw.ApplicationWindow):
     ) -> bool:
         button.set_sensitive(True)
         button.set_icon_name("go-next-symbolic")
-
-        dialog = Adw.AlertDialog(
-            heading="Unable to analyze application",
-            body=message,
-        )
-        dialog.add_response("close", "Close")
-        dialog.present(self)
-
+        self._show_message("Unable to analyze application", message)
         return GLib.SOURCE_REMOVE
 
     def _on_analysis_dialog_response(
@@ -298,19 +273,67 @@ class AppSweepWindow(Adw.ApplicationWindow):
         _dialog: Adw.AlertDialog,
         response: str,
     ) -> None:
-        if response != "continue":
+        if response != "backup":
             return
 
-        dialog = Adw.AlertDialog(
-            heading="Removal remains disabled",
-            body=(
-                f"The removal plan for {application.display_name} was "
-                "generated successfully. AppSweep will not modify the system "
-                "until privileged removal and rollback protection are added."
+        self._executor.submit(
+            self._run_backup,
+            application,
+            analysis,
+        )
+
+    def _run_backup(
+        self,
+        application: InstalledApplication,
+        analysis: RemovalAnalysis,
+    ) -> None:
+        try:
+            result = self._backup_manager.create(application, analysis)
+        except Exception as error:
+            GLib.idle_add(
+                self._show_message,
+                "Unable to create rollback backup",
+                str(error),
+            )
+            return
+
+        GLib.idle_add(
+            self._show_backup_result,
+            application,
+            result,
+        )
+
+    def _show_backup_result(
+        self,
+        application: InstalledApplication,
+        result: BackupResult,
+    ) -> bool:
+        archive_text = (
+            str(result.archive)
+            if result.archive is not None
+            else "No user-data archive was required."
+        )
+
+        self._show_message(
+            f"Rollback backup created for {application.display_name}",
+            (
+                f"Backup directory\n{result.directory}\n\n"
+                f"User-data archive\n{archive_text}\n\n"
+                f"Removal manifest\n{result.manifest}\n\n"
+                "No package or user data has been removed."
             ),
+        )
+
+        return GLib.SOURCE_REMOVE
+
+    def _show_message(self, heading: str, body: str) -> bool:
+        dialog = Adw.AlertDialog(
+            heading=heading,
+            body=body,
         )
         dialog.add_response("close", "Close")
         dialog.present(self)
+        return GLib.SOURCE_REMOVE
 
     def _on_search_changed(self, _entry: Gtk.SearchEntry) -> None:
         self._list_box.invalidate_filter()
