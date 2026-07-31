@@ -3,13 +3,13 @@ from functools import partial
 
 from gi.repository import Adw, GLib, Gtk
 
-from appsweep.apt_scanner import AptScanner
+from appsweep.application_scanner import ApplicationScanner
 from appsweep.backup_manager import (
     BackupManager,
     BackupResult,
     BackupVerification,
 )
-from appsweep.models import InstalledApplication
+from appsweep.models import InstalledApplication, PackageBackend
 from appsweep.removal_analyzer import RemovalAnalysis, RemovalAnalyzer
 from appsweep.removal_service import (
     LeftoverRemovalResult,
@@ -26,7 +26,7 @@ class AppSweepWindow(Adw.ApplicationWindow):
         self.set_default_size(960, 640)
         self.set_size_request(640, 480)
 
-        self._scanner = AptScanner()
+        self._scanner = ApplicationScanner()
         self._analyzer = RemovalAnalyzer()
         self._backup_manager = BackupManager()
         self._removal_service = RemovalService()
@@ -138,7 +138,10 @@ class AppSweepWindow(Adw.ApplicationWindow):
     ) -> Adw.ActionRow:
         row = Adw.ActionRow()
         row.set_title(application.display_name)
-        row.set_subtitle(f"{application.package_name} · {application.version}")
+        row.set_subtitle(
+            f"{application.backend.value.upper()} · "
+            f"{application.package_name} · {application.version}"
+        )
 
         icon_name = application.icon_name or "application-x-executable-symbolic"
         icon = Gtk.Image.new_from_icon_name(icon_name)
@@ -166,6 +169,18 @@ class AppSweepWindow(Adw.ApplicationWindow):
         application: InstalledApplication,
         button: Gtk.Button,
     ) -> None:
+        if application.backend is PackageBackend.SNAP:
+            self._show_message(
+                f"Review {application.display_name}",
+                (
+                    f"Package type\nSnap\n\n"
+                    f"Package\n{application.package_name}\n\n"
+                    f"Version\n{application.version}\n\n"
+                    "Snap removal and user-data analysis will be added in the next stage."
+                ),
+            )
+            return
+
         button.set_sensitive(False)
         button.set_icon_name("content-loading-symbolic")
 
@@ -622,7 +637,7 @@ class AppSweepWindow(Adw.ApplicationWindow):
         if self._search_entry.get_text().strip():
             text = f"{visible_count} matching applications"
         else:
-            text = f"{visible_count} installed APT applications found"
+            text = f"{visible_count} installed applications found"
 
         self._result_label.set_text(text)
 

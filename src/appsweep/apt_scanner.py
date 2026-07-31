@@ -4,7 +4,7 @@ from pathlib import Path
 import apt
 from gi.repository import Gio, GLib
 
-from appsweep.models import InstalledApplication
+from appsweep.models import InstalledApplication, PackageBackend
 
 
 class AptScanner:
@@ -53,6 +53,7 @@ class AptScanner:
                 summary=description.strip(),
                 desktop_file=str(desktop_file),
                 icon_name=icon_name,
+                backend=PackageBackend.APT,
             )
 
             existing = applications.get(package_name)
