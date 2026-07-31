@@ -1,0 +1,165 @@
+#!/usr/bin/python3
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+PACKAGE_PATTERN = re.compile(r"^[a-z0-9][a-z0-9+.-]*(?::[a-z0-9][a-z0-9-]*)?$")
+LOCK_PATHS = (
+    Path("/var/lib/dpkg/lock"),
+    Path("/var/lib/dpkg/lock-frontend"),
+    Path("/var/lib/apt/lists/lock"),
+    Path("/var/cache/apt/archives/lock"),
+)
+
+
+def emit(success: bool, message: str, **details: object) -> None:
+    print(
+        json.dumps(
+            {
+                "success": success,
+                "message": message,
+                **details,
+            }
+        )
+    )
+
+
+def validate_environment() -> None:
+    if os.geteuid() != 0:
+        raise PermissionError("This helper must run with administrative privileges.")
+
+    if os.environ.get("PKEXEC_UID") is None:
+        raise PermissionError("This helper must be started through PolicyKit.")
+
+
+def validate_package_name(package_name: str) -> None:
+    if not PACKAGE_PATTERN.fullmatch(package_name):
+        raise ValueError("Invalid package name.")
+
+
+def package_is_installed(package_name: str) -> bool:
+    result = subprocess.run(
+        [
+            "/usr/bin/dpkg-query",
+            "-W",
+            "-f=${db:Status-Abbrev}",
+            package_name,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL": "C"},
+    )
+
+    return result.returncode == 0 and result.stdout.startswith("ii")
+
+
+def apt_is_locked() -> bool:
+    for path in LOCK_PATHS:
+        result = subprocess.run(
+            ["/usr/bin/fuser", str(path)],
+            capture_output=True,
+            check=False,
+            env={"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL": "C"},
+        )
+
+        if result.returncode == 0:
+            return True
+
+    return False
+
+
+def purge(package_name: str) -> int:
+    validate_package_name(package_name)
+
+    if not package_is_installed(package_name):
+        emit(False, f"Package '{package_name}' is not installed.")
+        return 3
+
+    if apt_is_locked():
+        emit(
+            False,
+            "APT or dpkg is currently busy. Close other package-management tools and retry.",
+        )
+        return 4
+
+    environment = {
+        "PATH": "/usr/sbin:/usr/bin:/sbin:/bin",
+        "HOME": "/root",
+        "LC_ALL": "C",
+        "DEBIAN_FRONTEND": "noninteractive",
+    }
+
+    result = subprocess.run(
+        [
+            "/usr/bin/apt-get",
+            "--assume-yes",
+            "--purge",
+            "--no-install-recommends",
+            "remove",
+            package_name,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=environment,
+    )
+
+    if result.returncode != 0:
+        emit(
+            False,
+            "APT could not remove the package.",
+            exit_code=result.returncode,
+            stdout=result.stdout,
+            stderr=result.stderr,
+        )
+        return result.returncode
+
+    emit(
+        True,
+        f"Package '{package_name}' was purged successfully.",
+        stdout=result.stdout,
+    )
+    return 0
+
+
+def parse_arguments() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(prog="appsweep-helper")
+    parser.add_argument("--version", action="store_true")
+    parser.add_argument("--purge", metavar="PACKAGE")
+    arguments = parser.parse_args()
+
+    if not arguments.version and not arguments.purge:
+        parser.error("one operation is required")
+
+    if arguments.version and arguments.purge:
+        parser.error("only one operation may be requested")
+
+    return arguments
+
+
+def main() -> int:
+    try:
+        validate_environment()
+        arguments = parse_arguments()
+
+        if arguments.version:
+            emit(True, "AppSweep helper 0.1.0")
+            return 0
+
+        return purge(arguments.purge)
+    except (PermissionError, ValueError) as error:
+        emit(False, str(error))
+        return 2
+    except Exception as error:
+        emit(False, f"Unexpected helper error: {error}")
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
