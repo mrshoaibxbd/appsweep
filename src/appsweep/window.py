@@ -176,6 +176,10 @@ class AppSweepWindow(Adw.ApplicationWindow):
             self._show_snap_removal_analysis(application, analysis)
             return
 
+        if application.backend is PackageBackend.FLATPAK:
+            self._show_flatpak_review(application)
+            return
+
         button.set_sensitive(False)
         button.set_icon_name("content-loading-symbolic")
 
@@ -184,6 +188,30 @@ class AppSweepWindow(Adw.ApplicationWindow):
             application,
             button,
         )
+
+    def _show_flatpak_review(
+        self,
+        application: InstalledApplication,
+    ) -> None:
+        scope = (
+            application.installation_scope.title() if application.installation_scope else "Unknown"
+        )
+
+        dialog = Adw.AlertDialog(
+            heading=f"Review {application.display_name}",
+            body=(
+                f"{application.summary or 'No application description is available.'}\n\n"
+                f"Package type\nFlatpak\n\n"
+                f"Application ID\n{application.package_name}\n\n"
+                f"Version\n{application.version or 'Unknown'}\n\n"
+                f"Installation scope\n{scope}\n\n"
+                "Flatpak removal and data cleanup will be enabled in the next stage."
+            ),
+        )
+        dialog.add_response("close", "Close")
+        dialog.set_default_response("close")
+        dialog.set_close_response("close")
+        dialog.present(self)
 
     def _show_snap_removal_analysis(
         self,

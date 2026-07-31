@@ -36,3 +36,19 @@ def test_snap_application_model() -> None:
     )
 
     assert application.backend is PackageBackend.SNAP
+
+
+def test_flatpak_application_model() -> None:
+    application = InstalledApplication(
+        package_name="org.example.App",
+        display_name="Example",
+        version="1.0",
+        summary="Example Flatpak",
+        desktop_file="",
+        icon_name="org.example.App",
+        backend=PackageBackend.FLATPAK,
+        installation_scope="user",
+    )
+
+    assert application.backend is PackageBackend.FLATPAK
+    assert application.installation_scope == "user"
