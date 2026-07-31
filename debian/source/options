@@ -1,0 +1,7 @@
+tar-ignore = .git
+tar-ignore = .venv
+tar-ignore = build
+tar-ignore = __pycache__
+tar-ignore = .pytest_cache
+tar-ignore = .mypy_cache
+tar-ignore = .ruff_cache
