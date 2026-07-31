@@ -1,4 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 
 from gi.repository import Adw, GLib, Gtk
 
@@ -145,9 +146,74 @@ class AppSweepWindow(Adw.ApplicationWindow):
 
         icon.set_pixel_size(32)
         row.add_prefix(icon)
+
+        review_button = Gtk.Button()
+        review_button.set_icon_name("go-next-symbolic")
+        review_button.set_tooltip_text("Review application")
+        review_button.set_valign(Gtk.Align.CENTER)
+        review_button.add_css_class("flat")
+        review_button.connect(
+            "clicked",
+            partial(self._on_review_clicked, application),
+        )
+
+        row.add_suffix(review_button)
+        row.set_activatable_widget(review_button)
         row.application = application
 
         return row
+
+    def _on_review_clicked(
+        self,
+        application: InstalledApplication,
+        _button: Gtk.Button,
+    ) -> None:
+        details = [
+            f"Package: {application.package_name}",
+            f"Version: {application.version}",
+            f"Desktop file: {application.desktop_file}",
+        ]
+
+        if application.summary:
+            details.insert(0, application.summary)
+
+        dialog = Adw.AlertDialog(
+            heading=application.display_name,
+            body="\n\n".join(details),
+        )
+        dialog.add_response("close", "Close")
+        dialog.add_response("review", "Review removal")
+        dialog.set_response_appearance(
+            "review",
+            Adw.ResponseAppearance.DESTRUCTIVE,
+        )
+        dialog.set_default_response("close")
+        dialog.set_close_response("close")
+        dialog.connect(
+            "response",
+            partial(self._on_application_dialog_response, application),
+        )
+        dialog.present(self)
+
+    def _on_application_dialog_response(
+        self,
+        application: InstalledApplication,
+        _dialog: Adw.AlertDialog,
+        response: str,
+    ) -> None:
+        if response != "review":
+            return
+
+        dialog = Adw.AlertDialog(
+            heading="Removal is not enabled yet",
+            body=(
+                f"AppSweep can identify {application.display_name}, but package "
+                "removal will only be enabled after dependency and leftover "
+                "analysis is implemented."
+            ),
+        )
+        dialog.add_response("close", "Close")
+        dialog.present(self)
 
     def _on_search_changed(self, _entry: Gtk.SearchEntry) -> None:
         self._list_box.invalidate_filter()
