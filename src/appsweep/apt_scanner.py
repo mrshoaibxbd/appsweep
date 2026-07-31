@@ -57,9 +57,7 @@ class AptScanner:
 
             existing = applications.get(package_name)
 
-            if existing is None or len(application.display_name) < len(
-                existing.display_name
-            ):
+            if existing is None or len(application.display_name) < len(existing.display_name):
                 applications[package_name] = application
 
         return sorted(

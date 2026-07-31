@@ -22,31 +22,23 @@ class RemovalAnalyzer:
         cache = apt.Cache()
 
         if application.package_name not in cache:
-            raise ValueError(
-                f"Package '{application.package_name}' is not available in APT."
-            )
+            raise ValueError(f"Package '{application.package_name}' is not available in APT.")
 
         package = cache[application.package_name]
 
         if not package.is_installed or package.installed is None:
-            raise ValueError(
-                f"Package '{application.package_name}' is not installed."
-            )
+            raise ValueError(f"Package '{application.package_name}' is not installed.")
 
         simulated_removals = self._simulate_purge(application.package_name)
         additional_removals = tuple(
-            name
-            for name in simulated_removals
-            if name != application.package_name
+            name for name in simulated_removals if name != application.package_name
         )
 
         return RemovalAnalysis(
             package_name=application.package_name,
             installed_size=package.installed.installed_size,
             additional_removals=additional_removals,
-            dependent_packages=self._installed_reverse_dependencies(
-                application.package_name
-            ),
+            dependent_packages=self._installed_reverse_dependencies(application.package_name),
             leftover_paths=self._find_leftovers(application),
         )
 
@@ -147,13 +139,7 @@ class RemovalAnalyzer:
                 if candidate.exists() or candidate.is_symlink():
                     candidates.add(candidate)
 
-        desktop_launcher = (
-            home
-            / ".local"
-            / "share"
-            / "applications"
-            / f"{desktop_stem}.desktop"
-        )
+        desktop_launcher = home / ".local" / "share" / "applications" / f"{desktop_stem}.desktop"
 
         if desktop_launcher.exists() or desktop_launcher.is_symlink():
             candidates.add(desktop_launcher)

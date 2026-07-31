@@ -122,15 +122,11 @@ class RemovalService:
                 continue
 
             if not relative.parts:
-                raise ValueError(
-                    f"Refusing to remove protected root directory: {root}"
-                )
+                raise ValueError(f"Refusing to remove protected root directory: {root}")
 
             return
 
-        raise ValueError(
-            f"Path is outside AppSweep's permitted user-data locations: {path}"
-        )
+        raise ValueError(f"Path is outside AppSweep's permitted user-data locations: {path}")
 
     @staticmethod
     def _remove_path(path: Path) -> None:

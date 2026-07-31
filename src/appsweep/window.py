@@ -138,14 +138,9 @@ class AppSweepWindow(Adw.ApplicationWindow):
     ) -> Adw.ActionRow:
         row = Adw.ActionRow()
         row.set_title(application.display_name)
-        row.set_subtitle(
-            f"{application.package_name} · {application.version}"
-        )
+        row.set_subtitle(f"{application.package_name} · {application.version}")
 
-        icon_name = (
-            application.icon_name
-            or "application-x-executable-symbolic"
-        )
+        icon_name = application.icon_name or "application-x-executable-symbolic"
         icon = Gtk.Image.new_from_icon_name(icon_name)
         icon.set_pixel_size(32)
         row.add_prefix(icon)
@@ -502,9 +497,7 @@ class AppSweepWindow(Adw.ApplicationWindow):
         analysis: RemovalAnalysis,
         backup: BackupResult | None,
     ) -> None:
-        package_result = self._removal_service.purge_package(
-            application.package_name
-        )
+        package_result = self._removal_service.purge_package(application.package_name)
 
         if not package_result.success:
             GLib.idle_add(
@@ -514,9 +507,7 @@ class AppSweepWindow(Adw.ApplicationWindow):
             )
             return
 
-        leftover_result = self._removal_service.remove_leftovers(
-            analysis.leftover_paths
-        )
+        leftover_result = self._removal_service.remove_leftovers(analysis.leftover_paths)
 
         GLib.idle_add(
             self._show_removal_success,
@@ -563,16 +554,11 @@ class AppSweepWindow(Adw.ApplicationWindow):
         if leftover_result.failed:
             sections.append(
                 "Paths that could not be deleted\n"
-                + "\n".join(
-                    f"{path}: {message}"
-                    for path, message in leftover_result.failed
-                )
+                + "\n".join(f"{path}: {message}" for path, message in leftover_result.failed)
             )
 
         if backup is not None:
-            sections.append(
-                f"Rollback backup retained at\n{backup.directory}"
-            )
+            sections.append(f"Rollback backup retained at\n{backup.directory}")
         else:
             sections.append("No rollback backup was created.")
 

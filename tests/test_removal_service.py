@@ -69,7 +69,7 @@ def test_remove_leftovers_rejects_protected_root(
             {"success": True, "message": "done"},
         ),
         (
-            "noise\n{\"success\": false, \"message\": \"failed\"}\n",
+            'noise\n{"success": false, "message": "failed"}\n',
             {"success": False, "message": "failed"},
         ),
     ],

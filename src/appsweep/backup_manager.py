@@ -53,9 +53,7 @@ class BackupManager:
                         "installed_size": analysis.installed_size,
                         "additional_removals": analysis.additional_removals,
                         "dependent_packages": analysis.dependent_packages,
-                        "leftover_paths": [
-                            str(path) for path in analysis.leftover_paths
-                        ],
+                        "leftover_paths": [str(path) for path in analysis.leftover_paths],
                     },
                     "archive": {
                         "filename": archive.name,
@@ -84,9 +82,7 @@ class BackupManager:
             return BackupVerification(False, "Backup manifest is missing.")
 
         try:
-            manifest_data = json.loads(
-                result.manifest.read_text(encoding="utf-8")
-            )
+            manifest_data = json.loads(result.manifest.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as error:
             return BackupVerification(
                 False,
@@ -166,11 +162,7 @@ class BackupManager:
         directory: Path,
         paths: tuple[Path, ...],
     ) -> Path | None:
-        existing_paths = [
-            path
-            for path in paths
-            if path.exists() or path.is_symlink()
-        ]
+        existing_paths = [path for path in paths if path.exists() or path.is_symlink()]
 
         if not existing_paths:
             return None
@@ -207,8 +199,4 @@ class BackupManager:
     def _safe_archive_member(name: str) -> bool:
         path = PurePosixPath(name)
 
-        return (
-            not path.is_absolute()
-            and ".." not in path.parts
-            and bool(path.parts)
-        )
+        return not path.is_absolute() and ".." not in path.parts and bool(path.parts)
