@@ -5,10 +5,11 @@ import json
 import os
 import re
 import subprocess
-import sys
 from pathlib import Path
 
 PACKAGE_PATTERN = re.compile(r"^[a-z0-9][a-z0-9+.-]*(?::[a-z0-9][a-z0-9-]*)?$")
+SNAP_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+
 LOCK_PATHS = (
     Path("/var/lib/dpkg/lock"),
     Path("/var/lib/dpkg/lock-frontend"),
@@ -46,13 +47,38 @@ PROTECTED_PACKAGES = frozenset(
     }
 )
 
-PROTECTED_PREFIXES = (
+PROTECTED_PACKAGE_PREFIXES = (
     "linux-image-",
     "linux-modules-",
     "linux-headers-",
     "grub-",
     "shim-",
 )
+
+PROTECTED_SNAPS = frozenset(
+    {
+        "snapd",
+        "bare",
+        "core",
+        "core18",
+        "core20",
+        "core22",
+        "core24",
+        "gtk-common-themes",
+    }
+)
+
+PROTECTED_SNAP_PREFIXES = (
+    "gnome-",
+    "desktop-security-center",
+)
+
+ENVIRONMENT = {
+    "PATH": "/usr/sbin:/usr/bin:/sbin:/bin",
+    "HOME": "/root",
+    "LC_ALL": "C",
+    "DEBIAN_FRONTEND": "noninteractive",
+}
 
 
 def emit(success: bool, message: str, **details: object) -> None:
@@ -81,8 +107,18 @@ def validate_package_name(package_name: str) -> None:
 
     normalized = package_name.split(":", 1)[0]
 
-    if normalized in PROTECTED_PACKAGES or normalized.startswith(PROTECTED_PREFIXES):
+    if normalized in PROTECTED_PACKAGES or normalized.startswith(
+        PROTECTED_PACKAGE_PREFIXES
+    ):
         raise ValueError("AppSweep refuses to remove protected system packages.")
+
+
+def validate_snap_name(snap_name: str) -> None:
+    if not SNAP_PATTERN.fullmatch(snap_name):
+        raise ValueError("Invalid Snap name.")
+
+    if snap_name in PROTECTED_SNAPS or snap_name.startswith(PROTECTED_SNAP_PREFIXES):
+        raise ValueError("AppSweep refuses to remove protected Snap components.")
 
 
 def package_is_installed(package_name: str) -> bool:
@@ -96,10 +132,22 @@ def package_is_installed(package_name: str) -> bool:
         capture_output=True,
         text=True,
         check=False,
-        env={"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL": "C"},
+        env=ENVIRONMENT,
     )
 
     return result.returncode == 0 and result.stdout.startswith("ii")
+
+
+def snap_is_installed(snap_name: str) -> bool:
+    result = subprocess.run(
+        ["/usr/bin/snap", "list", snap_name],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=ENVIRONMENT,
+    )
+
+    return result.returncode == 0
 
 
 def apt_is_locked() -> bool:
@@ -108,7 +156,7 @@ def apt_is_locked() -> bool:
             ["/usr/bin/fuser", str(path)],
             capture_output=True,
             check=False,
-            env={"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL": "C"},
+            env=ENVIRONMENT,
         )
 
         if result.returncode == 0:
@@ -117,7 +165,7 @@ def apt_is_locked() -> bool:
     return False
 
 
-def purge(package_name: str) -> int:
+def purge_package(package_name: str) -> int:
     validate_package_name(package_name)
 
     if not package_is_installed(package_name):
@@ -125,18 +173,8 @@ def purge(package_name: str) -> int:
         return 3
 
     if apt_is_locked():
-        emit(
-            False,
-            "APT or dpkg is currently busy. Close other package-management tools and retry.",
-        )
+        emit(False, "APT or dpkg is currently busy.")
         return 4
-
-    environment = {
-        "PATH": "/usr/sbin:/usr/bin:/sbin:/bin",
-        "HOME": "/root",
-        "LC_ALL": "C",
-        "DEBIAN_FRONTEND": "noninteractive",
-    }
 
     result = subprocess.run(
         [
@@ -150,16 +188,16 @@ def purge(package_name: str) -> int:
         capture_output=True,
         text=True,
         check=False,
-        env=environment,
+        env=ENVIRONMENT,
     )
 
     if result.returncode != 0:
         emit(
             False,
             "APT could not remove the package.",
-            exit_code=result.returncode,
             stdout=result.stdout,
             stderr=result.stderr,
+            exit_code=result.returncode,
         )
         return result.returncode
 
@@ -171,19 +209,56 @@ def purge(package_name: str) -> int:
     return 0
 
 
+def remove_snap(snap_name: str, purge: bool) -> int:
+    validate_snap_name(snap_name)
+
+    if not snap_is_installed(snap_name):
+        emit(False, f"Snap '{snap_name}' is not installed.")
+        return 3
+
+    command = ["/usr/bin/snap", "remove", snap_name]
+
+    if purge:
+        command.append("--purge")
+
+    result = subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        check=False,
+        env=ENVIRONMENT,
+    )
+
+    if result.returncode != 0:
+        emit(
+            False,
+            "Snap could not remove the application.",
+            stdout=result.stdout,
+            stderr=result.stderr,
+            exit_code=result.returncode,
+        )
+        return result.returncode
+
+    message = (
+        f"Snap '{snap_name}' was removed without creating a new snapshot."
+        if purge
+        else f"Snap '{snap_name}' was removed and Snap created a rollback snapshot."
+    )
+
+    emit(True, message, stdout=result.stdout)
+    return 0
+
+
 def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="appsweep-helper")
-    parser.add_argument("--version", action="store_true")
-    parser.add_argument("--purge", metavar="PACKAGE")
-    arguments = parser.parse_args()
 
-    if not arguments.version and not arguments.purge:
-        parser.error("one operation is required")
+    operations = parser.add_mutually_exclusive_group(required=True)
+    operations.add_argument("--version", action="store_true")
+    operations.add_argument("--purge", metavar="PACKAGE")
+    operations.add_argument("--remove-snap", metavar="SNAP")
+    operations.add_argument("--purge-snap", metavar="SNAP")
 
-    if arguments.version and arguments.purge:
-        parser.error("only one operation may be requested")
-
-    return arguments
+    return parser.parse_args()
 
 
 def main() -> int:
@@ -192,10 +267,16 @@ def main() -> int:
         arguments = parse_arguments()
 
         if arguments.version:
-            emit(True, "AppSweep helper 0.1.0")
+            emit(True, "AppSweep helper 0.2.0")
             return 0
 
-        return purge(arguments.purge)
+        if arguments.purge:
+            return purge_package(arguments.purge)
+
+        if arguments.remove_snap:
+            return remove_snap(arguments.remove_snap, purge=False)
+
+        return remove_snap(arguments.purge_snap, purge=True)
     except (PermissionError, ValueError) as error:
         emit(False, str(error))
         return 2

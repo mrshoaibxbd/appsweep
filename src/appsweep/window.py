@@ -11,6 +11,7 @@ from appsweep.backup_manager import (
 )
 from appsweep.models import InstalledApplication, PackageBackend
 from appsweep.removal_analyzer import RemovalAnalysis, RemovalAnalyzer
+from appsweep.snap_removal_analyzer import SnapRemovalAnalysis, SnapRemovalAnalyzer
 from appsweep.removal_service import (
     LeftoverRemovalResult,
     PackageRemovalResult,
@@ -28,6 +29,7 @@ class AppSweepWindow(Adw.ApplicationWindow):
 
         self._scanner = ApplicationScanner()
         self._analyzer = RemovalAnalyzer()
+        self._snap_analyzer = SnapRemovalAnalyzer()
         self._backup_manager = BackupManager()
         self._removal_service = RemovalService()
         self._executor = ThreadPoolExecutor(max_workers=1)
@@ -170,15 +172,8 @@ class AppSweepWindow(Adw.ApplicationWindow):
         button: Gtk.Button,
     ) -> None:
         if application.backend is PackageBackend.SNAP:
-            self._show_message(
-                f"Review {application.display_name}",
-                (
-                    f"Package type\nSnap\n\n"
-                    f"Package\n{application.package_name}\n\n"
-                    f"Version\n{application.version}\n\n"
-                    "Snap removal and user-data analysis will be added in the next stage."
-                ),
-            )
+            analysis = self._snap_analyzer.analyze(application)
+            self._show_snap_removal_analysis(application, analysis)
             return
 
         button.set_sensitive(False)
@@ -189,6 +184,185 @@ class AppSweepWindow(Adw.ApplicationWindow):
             application,
             button,
         )
+
+    def _show_snap_removal_analysis(
+        self,
+        application: InstalledApplication,
+        analysis: SnapRemovalAnalysis,
+    ) -> None:
+        paths = (
+            "\n".join(str(path) for path in analysis.user_data_paths)
+            if analysis.user_data_paths
+            else "None detected"
+        )
+
+        sections = [
+            application.summary or "No application description is available.",
+            (
+                f"Package type\nSnap\n\n"
+                f"Package\n{analysis.snap_name}\n\n"
+                f"Version\n{application.version}"
+            ),
+            f"User-data paths\n{paths}",
+        ]
+
+        if analysis.protected:
+            sections.append(
+                "Protected Snap component\n"
+                + analysis.protection_reason
+                + "\n\nAppSweep will not allow this Snap to be removed."
+            )
+
+        dialog = Adw.AlertDialog(
+            heading=f"Review {application.display_name}",
+            body="\n\n".join(sections),
+        )
+        dialog.add_response("close", "Close")
+
+        if not analysis.protected:
+            dialog.add_response("backup", "Remove with Snap backup")
+            dialog.add_response("permanent", "Remove without backup")
+            dialog.set_response_appearance(
+                "backup",
+                Adw.ResponseAppearance.SUGGESTED,
+            )
+            dialog.set_response_appearance(
+                "permanent",
+                Adw.ResponseAppearance.DESTRUCTIVE,
+            )
+            dialog.connect(
+                "response",
+                partial(
+                    self._on_snap_analysis_response,
+                    application,
+                    analysis,
+                ),
+            )
+
+        dialog.set_default_response("close")
+        dialog.set_close_response("close")
+        dialog.present(self)
+
+    def _on_snap_analysis_response(
+        self,
+        application: InstalledApplication,
+        analysis: SnapRemovalAnalysis,
+        _dialog: Adw.AlertDialog,
+        response: str,
+    ) -> None:
+        if response == "backup":
+            self._executor.submit(
+                self._run_snap_removal,
+                application,
+                analysis,
+                True,
+            )
+        elif response == "permanent":
+            self._show_snap_permanent_warning(application, analysis)
+
+    def _show_snap_permanent_warning(
+        self,
+        application: InstalledApplication,
+        analysis: SnapRemovalAnalysis,
+    ) -> None:
+        dialog = Adw.AlertDialog(
+            heading=f"Permanently remove {application.display_name}?",
+            body=(
+                "Snap will remove the application and its current user, system, "
+                "and configuration data without creating a new rollback snapshot.\n\n"
+                "Older Snap snapshots, if any exist, are not deleted by this action."
+            ),
+        )
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("remove", "Remove permanently")
+        dialog.set_response_appearance(
+            "remove",
+            Adw.ResponseAppearance.DESTRUCTIVE,
+        )
+        dialog.set_default_response("cancel")
+        dialog.set_close_response("cancel")
+        dialog.connect(
+            "response",
+            partial(
+                self._on_snap_permanent_warning_response,
+                application,
+                analysis,
+            ),
+        )
+        dialog.present(self)
+
+    def _on_snap_permanent_warning_response(
+        self,
+        application: InstalledApplication,
+        analysis: SnapRemovalAnalysis,
+        _dialog: Adw.AlertDialog,
+        response: str,
+    ) -> None:
+        if response != "remove":
+            return
+
+        self._executor.submit(
+            self._run_snap_removal,
+            application,
+            analysis,
+            False,
+        )
+
+    def _run_snap_removal(
+        self,
+        application: InstalledApplication,
+        analysis: SnapRemovalAnalysis,
+        create_snapshot: bool,
+    ) -> None:
+        if analysis.protected:
+            GLib.idle_add(
+                self._show_message,
+                "Protected Snap component",
+                analysis.protection_reason,
+            )
+            return
+
+        result = self._removal_service.remove_snap(
+            analysis.snap_name,
+            create_snapshot,
+        )
+
+        if not result.success:
+            GLib.idle_add(
+                self._show_removal_failure,
+                application,
+                result,
+            )
+            return
+
+        GLib.idle_add(
+            self._show_snap_removal_success,
+            application,
+            result,
+            create_snapshot,
+        )
+
+    def _show_snap_removal_success(
+        self,
+        application: InstalledApplication,
+        result: PackageRemovalResult,
+        created_snapshot: bool,
+    ) -> bool:
+        backup_text = (
+            "Snap created and retained a rollback snapshot."
+            if created_snapshot
+            else "No new rollback snapshot was created."
+        )
+
+        dialog = Adw.AlertDialog(
+            heading=f"{application.display_name} removed",
+            body=f"{result.message}\n\n{backup_text}",
+        )
+        dialog.add_response("close", "Close")
+        dialog.connect("response", self._on_removal_result_closed)
+        dialog.present(self)
+
+        return GLib.SOURCE_REMOVE
 
     def _run_removal_analysis(
         self,

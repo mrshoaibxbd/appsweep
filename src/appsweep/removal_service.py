@@ -60,6 +60,50 @@ class RemovalService:
             stderr=str(response.get("stderr", result.stderr)),
         )
 
+    def remove_snap(
+        self,
+        snap_name: str,
+        create_snapshot: bool,
+    ) -> PackageRemovalResult:
+        operation = "--remove-snap" if create_snapshot else "--purge-snap"
+
+        result = subprocess.run(
+            [
+                "/usr/bin/pkexec",
+                str(self.helper_path),
+                operation,
+                snap_name,
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        if result.returncode in (126, 127):
+            return PackageRemovalResult(
+                success=False,
+                message="Authentication was cancelled or denied.",
+                stdout=result.stdout,
+                stderr=result.stderr,
+            )
+
+        response = self._read_helper_response(result.stdout)
+
+        if response is None:
+            return PackageRemovalResult(
+                success=False,
+                message="The privileged helper returned an invalid response.",
+                stdout=result.stdout,
+                stderr=result.stderr,
+            )
+
+        return PackageRemovalResult(
+            success=bool(response.get("success")),
+            message=str(response.get("message", "Unknown helper response.")),
+            stdout=str(response.get("stdout", "")),
+            stderr=str(response.get("stderr", result.stderr)),
+        )
+
     def remove_leftovers(
         self,
         paths: tuple[Path, ...],
@@ -107,6 +151,7 @@ class RemovalService:
             home / ".cache",
             home / ".local" / "share",
             home / ".local" / "state",
+            home / "snap",
         )
 
     def _validate_leftover_path(self, path: Path) -> None:
