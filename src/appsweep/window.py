@@ -5,6 +5,7 @@ from gi.repository import Adw, GLib, Gtk
 
 from appsweep.apt_scanner import AptScanner
 from appsweep.models import InstalledApplication
+from appsweep.removal_analyzer import RemovalAnalysis, RemovalAnalyzer
 
 
 class AppSweepWindow(Adw.ApplicationWindow):
@@ -16,6 +17,7 @@ class AppSweepWindow(Adw.ApplicationWindow):
         self.set_size_request(640, 480)
 
         self._scanner = AptScanner()
+        self._analyzer = RemovalAnalyzer()
         self._executor = ThreadPoolExecutor(max_workers=1)
         self._applications: list[InstalledApplication] = []
 
@@ -137,13 +139,11 @@ class AppSweepWindow(Adw.ApplicationWindow):
             f"{application.package_name} · {application.version}"
         )
 
-        if application.icon_name:
-            icon = Gtk.Image.new_from_icon_name(application.icon_name)
-        else:
-            icon = Gtk.Image.new_from_icon_name(
-                "application-x-executable-symbolic"
-            )
-
+        icon_name = (
+            application.icon_name
+            or "application-x-executable-symbolic"
+        )
+        icon = Gtk.Image.new_from_icon_name(icon_name)
         icon.set_pixel_size(32)
         row.add_prefix(icon)
 
@@ -166,50 +166,147 @@ class AppSweepWindow(Adw.ApplicationWindow):
     def _on_review_clicked(
         self,
         application: InstalledApplication,
-        _button: Gtk.Button,
+        button: Gtk.Button,
     ) -> None:
-        details = [
-            f"Package: {application.package_name}",
-            f"Version: {application.version}",
-            f"Desktop file: {application.desktop_file}",
+        button.set_sensitive(False)
+        button.set_icon_name("content-loading-symbolic")
+
+        self._executor.submit(
+            self._run_removal_analysis,
+            application,
+            button,
+        )
+
+    def _run_removal_analysis(
+        self,
+        application: InstalledApplication,
+        button: Gtk.Button,
+    ) -> None:
+        try:
+            analysis = self._analyzer.analyze(application)
+        except Exception as error:
+            GLib.idle_add(
+                self._show_analysis_error,
+                button,
+                str(error),
+            )
+            return
+
+        GLib.idle_add(
+            self._show_removal_analysis,
+            application,
+            analysis,
+            button,
+        )
+
+    def _show_removal_analysis(
+        self,
+        application: InstalledApplication,
+        analysis: RemovalAnalysis,
+        button: Gtk.Button,
+    ) -> bool:
+        button.set_sensitive(True)
+        button.set_icon_name("go-next-symbolic")
+
+        sections = [
+            application.summary or "No application description is available.",
+            (
+                f"Package\n{analysis.package_name}\n\n"
+                f"Installed size\n"
+                f"{self._format_size(analysis.installed_size)}"
+            ),
         ]
 
-        if application.summary:
-            details.insert(0, application.summary)
+        if analysis.additional_removals:
+            sections.append(
+                "Additional packages APT would remove\n"
+                + "\n".join(analysis.additional_removals)
+            )
+        else:
+            sections.append(
+                "Additional packages APT would remove\nNone"
+            )
+
+        if analysis.dependent_packages:
+            sections.append(
+                "Installed packages referencing this package\n"
+                + "\n".join(analysis.dependent_packages)
+            )
+        else:
+            sections.append(
+                "Installed packages referencing this package\nNone detected"
+            )
+
+        if analysis.leftover_paths:
+            sections.append(
+                "Verified user-data paths\n"
+                + "\n".join(
+                    str(path)
+                    for path in analysis.leftover_paths
+                )
+            )
+        else:
+            sections.append(
+                "Verified user-data paths\nNone detected"
+            )
 
         dialog = Adw.AlertDialog(
-            heading=application.display_name,
-            body="\n\n".join(details),
+            heading=f"Review {application.display_name}",
+            body="\n\n".join(sections),
         )
         dialog.add_response("close", "Close")
-        dialog.add_response("review", "Review removal")
+        dialog.add_response("continue", "Continue")
         dialog.set_response_appearance(
-            "review",
+            "continue",
             Adw.ResponseAppearance.DESTRUCTIVE,
         )
         dialog.set_default_response("close")
         dialog.set_close_response("close")
         dialog.connect(
             "response",
-            partial(self._on_application_dialog_response, application),
+            partial(
+                self._on_analysis_dialog_response,
+                application,
+                analysis,
+            ),
         )
         dialog.present(self)
 
-    def _on_application_dialog_response(
+        return GLib.SOURCE_REMOVE
+
+    def _show_analysis_error(
+        self,
+        button: Gtk.Button,
+        message: str,
+    ) -> bool:
+        button.set_sensitive(True)
+        button.set_icon_name("go-next-symbolic")
+
+        dialog = Adw.AlertDialog(
+            heading="Unable to analyze application",
+            body=message,
+        )
+        dialog.add_response("close", "Close")
+        dialog.present(self)
+
+        return GLib.SOURCE_REMOVE
+
+    def _on_analysis_dialog_response(
         self,
         application: InstalledApplication,
+        analysis: RemovalAnalysis,
         _dialog: Adw.AlertDialog,
         response: str,
     ) -> None:
-        if response != "review":
+        if response != "continue":
             return
 
         dialog = Adw.AlertDialog(
-            heading="Removal is not enabled yet",
+            heading="Removal remains disabled",
             body=(
-                f"AppSweep can identify {application.display_name}, but package "
-                "removal will only be enabled after dependency and leftover "
-                "analysis is implemented."
+                f"The removal plan for {application.display_name} was "
+                "generated successfully. AppSweep will not modify the system "
+                "until privileged removal and rollback protection are added."
             ),
         )
         dialog.add_response("close", "Close")
@@ -229,13 +326,11 @@ class AppSweepWindow(Adw.ApplicationWindow):
             row = row.get_next_sibling()
 
         if self._search_entry.get_text().strip():
-            self._result_label.set_text(
-                f"{visible_count} matching applications"
-            )
+            text = f"{visible_count} matching applications"
         else:
-            self._result_label.set_text(
-                f"{visible_count} installed APT applications found"
-            )
+            text = f"{visible_count} installed APT applications found"
+
+        self._result_label.set_text(text)
 
     def _filter_row(self, row: Gtk.ListBoxRow) -> bool:
         query = self._search_entry.get_text().strip().casefold()
@@ -244,7 +339,6 @@ class AppSweepWindow(Adw.ApplicationWindow):
             return True
 
         application = row.application
-
         searchable_text = " ".join(
             (
                 application.package_name,
@@ -263,6 +357,27 @@ class AppSweepWindow(Adw.ApplicationWindow):
             self._list_box.remove(child)
             child = next_child
 
-    def _on_close_request(self, _window: Adw.ApplicationWindow) -> bool:
-        self._executor.shutdown(wait=False, cancel_futures=True)
+    @staticmethod
+    def _format_size(size: int) -> str:
+        value = float(size)
+
+        for unit in ("B", "KB", "MB", "GB", "TB"):
+            if value < 1024 or unit == "TB":
+                if unit == "B":
+                    return f"{int(value)} {unit}"
+
+                return f"{value:.1f} {unit}"
+
+            value /= 1024
+
+        return f"{size} B"
+
+    def _on_close_request(
+        self,
+        _window: Adw.ApplicationWindow,
+    ) -> bool:
+        self._executor.shutdown(
+            wait=False,
+            cancel_futures=True,
+        )
         return False
