@@ -11,6 +11,11 @@ from appsweep.backup_manager import (
 )
 from appsweep.models import InstalledApplication
 from appsweep.removal_analyzer import RemovalAnalysis, RemovalAnalyzer
+from appsweep.removal_service import (
+    LeftoverRemovalResult,
+    PackageRemovalResult,
+    RemovalService,
+)
 
 
 class AppSweepWindow(Adw.ApplicationWindow):
@@ -24,6 +29,7 @@ class AppSweepWindow(Adw.ApplicationWindow):
         self._scanner = AptScanner()
         self._analyzer = RemovalAnalyzer()
         self._backup_manager = BackupManager()
+        self._removal_service = RemovalService()
         self._executor = ThreadPoolExecutor(max_workers=1)
 
         self._stack = Gtk.Stack()
@@ -242,10 +248,15 @@ class AppSweepWindow(Adw.ApplicationWindow):
             body="\n\n".join(sections),
         )
         dialog.add_response("close", "Close")
-        dialog.add_response("backup", "Create rollback backup")
+        dialog.add_response("backup", "Remove with backup")
+        dialog.add_response("permanent", "Remove without backup")
         dialog.set_response_appearance(
             "backup",
             Adw.ResponseAppearance.SUGGESTED,
+        )
+        dialog.set_response_appearance(
+            "permanent",
+            Adw.ResponseAppearance.DESTRUCTIVE,
         )
         dialog.set_default_response("close")
         dialog.set_close_response("close")
@@ -278,14 +289,17 @@ class AppSweepWindow(Adw.ApplicationWindow):
         _dialog: Adw.AlertDialog,
         response: str,
     ) -> None:
-        if response != "backup":
-            return
-
-        self._executor.submit(
-            self._run_backup,
-            application,
-            analysis,
-        )
+        if response == "backup":
+            self._executor.submit(
+                self._run_backup,
+                application,
+                analysis,
+            )
+        elif response == "permanent":
+            self._show_permanent_removal_warning(
+                application,
+                analysis,
+            )
 
     def _run_backup(
         self,
@@ -306,6 +320,7 @@ class AppSweepWindow(Adw.ApplicationWindow):
         GLib.idle_add(
             self._show_backup_result,
             application,
+            analysis,
             result,
             verification,
         )
@@ -313,6 +328,7 @@ class AppSweepWindow(Adw.ApplicationWindow):
     def _show_backup_result(
         self,
         application: InstalledApplication,
+        analysis: RemovalAnalysis,
         result: BackupResult,
         verification: BackupVerification,
     ) -> bool:
@@ -325,7 +341,7 @@ class AppSweepWindow(Adw.ApplicationWindow):
         heading = (
             f"Rollback backup verified for {application.display_name}"
             if verification.valid
-            else f"Rollback backup failed verification for {application.display_name}"
+            else f"Backup verification failed for {application.display_name}"
         )
 
         dialog = Adw.AlertDialog(
@@ -335,22 +351,23 @@ class AppSweepWindow(Adw.ApplicationWindow):
                 f"User-data archive\n{archive_text}\n\n"
                 f"Removal manifest\n{result.manifest}\n\n"
                 f"Verification\n{verification.message}\n\n"
-                "No package or user data has been removed."
+                "The backup will remain stored after removal."
             ),
         )
         dialog.add_response("close", "Close")
 
         if verification.valid:
-            dialog.add_response("continue", "Continue")
+            dialog.add_response("remove", "Remove application")
             dialog.set_response_appearance(
-                "continue",
+                "remove",
                 Adw.ResponseAppearance.DESTRUCTIVE,
             )
             dialog.connect(
                 "response",
                 partial(
-                    self._on_verified_backup_response,
+                    self._on_backup_dialog_response,
                     application,
+                    analysis,
                     result,
                 ),
             )
@@ -361,25 +378,220 @@ class AppSweepWindow(Adw.ApplicationWindow):
 
         return GLib.SOURCE_REMOVE
 
-    def _on_verified_backup_response(
+    def _on_backup_dialog_response(
         self,
         application: InstalledApplication,
-        result: BackupResult,
+        analysis: RemovalAnalysis,
+        backup: BackupResult,
         _dialog: Adw.AlertDialog,
         response: str,
     ) -> None:
-        if response != "continue":
+        if response != "remove":
             return
 
-        self._show_message(
-            "Removal remains disabled",
-            (
-                f"The verified backup for {application.display_name} is stored at:\n\n"
-                f"{result.directory}\n\n"
-                "The next stage will add the privileged package-removal service. "
-                "No system changes have been made."
+        self._executor.submit(
+            self._run_removal,
+            application,
+            analysis,
+            backup,
+        )
+
+    def _show_permanent_removal_warning(
+        self,
+        application: InstalledApplication,
+        analysis: RemovalAnalysis,
+    ) -> None:
+        leftover_text = (
+            "\n".join(str(path) for path in analysis.leftover_paths)
+            if analysis.leftover_paths
+            else "No verified user-data paths were detected."
+        )
+
+        dialog = Adw.AlertDialog(
+            heading=f"Permanently remove {application.display_name}?",
+            body=(
+                "No rollback backup will be created.\n\n"
+                "The APT package will be purged and these verified user-data "
+                f"paths will be permanently deleted:\n\n{leftover_text}\n\n"
+                "This action cannot be undone by AppSweep."
             ),
         )
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("remove", "Remove permanently")
+        dialog.set_response_appearance(
+            "remove",
+            Adw.ResponseAppearance.DESTRUCTIVE,
+        )
+        dialog.set_default_response("cancel")
+        dialog.set_close_response("cancel")
+        dialog.connect(
+            "response",
+            partial(
+                self._on_permanent_warning_response,
+                application,
+                analysis,
+            ),
+        )
+        dialog.present(self)
+
+    def _on_permanent_warning_response(
+        self,
+        application: InstalledApplication,
+        analysis: RemovalAnalysis,
+        _dialog: Adw.AlertDialog,
+        response: str,
+    ) -> None:
+        if response != "remove":
+            return
+
+        self._show_final_permanent_confirmation(
+            application,
+            analysis,
+        )
+
+    def _show_final_permanent_confirmation(
+        self,
+        application: InstalledApplication,
+        analysis: RemovalAnalysis,
+    ) -> None:
+        dialog = Adw.AlertDialog(
+            heading="Final confirmation",
+            body=(
+                f"Remove {application.display_name} and permanently delete "
+                "its verified user data without creating a backup?"
+            ),
+        )
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("confirm", "Yes, remove it")
+        dialog.set_response_appearance(
+            "confirm",
+            Adw.ResponseAppearance.DESTRUCTIVE,
+        )
+        dialog.set_default_response("cancel")
+        dialog.set_close_response("cancel")
+        dialog.connect(
+            "response",
+            partial(
+                self._on_final_confirmation_response,
+                application,
+                analysis,
+            ),
+        )
+        dialog.present(self)
+
+    def _on_final_confirmation_response(
+        self,
+        application: InstalledApplication,
+        analysis: RemovalAnalysis,
+        _dialog: Adw.AlertDialog,
+        response: str,
+    ) -> None:
+        if response != "confirm":
+            return
+
+        self._executor.submit(
+            self._run_removal,
+            application,
+            analysis,
+            None,
+        )
+
+    def _run_removal(
+        self,
+        application: InstalledApplication,
+        analysis: RemovalAnalysis,
+        backup: BackupResult | None,
+    ) -> None:
+        package_result = self._removal_service.purge_package(
+            application.package_name
+        )
+
+        if not package_result.success:
+            GLib.idle_add(
+                self._show_removal_failure,
+                application,
+                package_result,
+            )
+            return
+
+        leftover_result = self._removal_service.remove_leftovers(
+            analysis.leftover_paths
+        )
+
+        GLib.idle_add(
+            self._show_removal_success,
+            application,
+            package_result,
+            leftover_result,
+            backup,
+        )
+
+    def _show_removal_failure(
+        self,
+        application: InstalledApplication,
+        result: PackageRemovalResult,
+    ) -> bool:
+        details = result.message
+
+        if result.stderr.strip():
+            details += f"\n\nDetails\n{result.stderr.strip()}"
+
+        self._show_message(
+            f"Unable to remove {application.display_name}",
+            details,
+        )
+
+        return GLib.SOURCE_REMOVE
+
+    def _show_removal_success(
+        self,
+        application: InstalledApplication,
+        package_result: PackageRemovalResult,
+        leftover_result: LeftoverRemovalResult,
+        backup: BackupResult | None,
+    ) -> bool:
+        sections = [package_result.message]
+
+        if leftover_result.removed:
+            sections.append(
+                "Deleted user-data paths\n"
+                + "\n".join(str(path) for path in leftover_result.removed)
+            )
+        else:
+            sections.append("Deleted user-data paths\nNone")
+
+        if leftover_result.failed:
+            sections.append(
+                "Paths that could not be deleted\n"
+                + "\n".join(
+                    f"{path}: {message}"
+                    for path, message in leftover_result.failed
+                )
+            )
+
+        if backup is not None:
+            sections.append(
+                f"Rollback backup retained at\n{backup.directory}"
+            )
+        else:
+            sections.append("No rollback backup was created.")
+
+        dialog = Adw.AlertDialog(
+            heading=f"{application.display_name} removed",
+            body="\n\n".join(sections),
+        )
+        dialog.add_response("close", "Close")
+        dialog.connect("response", self._on_removal_result_closed)
+        dialog.present(self)
+
+        return GLib.SOURCE_REMOVE
+
+    def _on_removal_result_closed(
+        self,
+        _dialog: Adw.AlertDialog,
+        _response: str,
+    ) -> None:
+        self._executor.submit(self._run_scan)
 
     def _show_message(self, heading: str, body: str) -> bool:
         dialog = Adw.AlertDialog(
