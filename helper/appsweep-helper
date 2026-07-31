@@ -16,6 +16,44 @@ LOCK_PATHS = (
     Path("/var/cache/apt/archives/lock"),
 )
 
+PROTECTED_PACKAGES = frozenset(
+    {
+        "apt",
+        "bash",
+        "coreutils",
+        "dbus",
+        "dpkg",
+        "gdm3",
+        "gnome-control-center",
+        "gnome-shell",
+        "grub-common",
+        "grub-pc",
+        "grub-pc-bin",
+        "libc6",
+        "linux-generic",
+        "linux-image-generic",
+        "nautilus",
+        "network-manager",
+        "nm-connection-editor",
+        "policykit-1",
+        "polkitd",
+        "sudo",
+        "systemd",
+        "systemd-sysv",
+        "ubuntu-desktop",
+        "ubuntu-desktop-minimal",
+        "util-linux",
+    }
+)
+
+PROTECTED_PREFIXES = (
+    "linux-image-",
+    "linux-modules-",
+    "linux-headers-",
+    "grub-",
+    "shim-",
+)
+
 
 def emit(success: bool, message: str, **details: object) -> None:
     print(
@@ -40,6 +78,11 @@ def validate_environment() -> None:
 def validate_package_name(package_name: str) -> None:
     if not PACKAGE_PATTERN.fullmatch(package_name):
         raise ValueError("Invalid package name.")
+
+    normalized = package_name.split(":", 1)[0]
+
+    if normalized in PROTECTED_PACKAGES or normalized.startswith(PROTECTED_PREFIXES):
+        raise ValueError("AppSweep refuses to remove protected system packages.")
 
 
 def package_is_installed(package_name: str) -> bool:

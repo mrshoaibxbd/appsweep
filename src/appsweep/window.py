@@ -238,31 +238,41 @@ class AppSweepWindow(Adw.ApplicationWindow):
             ),
         ]
 
+        if analysis.protected:
+            sections.append(
+                "Protected application\n"
+                + analysis.protection_reason
+                + "\n\nAppSweep will not allow this package to be removed."
+            )
+
         dialog = Adw.AlertDialog(
             heading=f"Review {application.display_name}",
             body="\n\n".join(sections),
         )
         dialog.add_response("close", "Close")
-        dialog.add_response("backup", "Remove with backup")
-        dialog.add_response("permanent", "Remove without backup")
-        dialog.set_response_appearance(
-            "backup",
-            Adw.ResponseAppearance.SUGGESTED,
-        )
-        dialog.set_response_appearance(
-            "permanent",
-            Adw.ResponseAppearance.DESTRUCTIVE,
-        )
+
+        if not analysis.protected:
+            dialog.add_response("backup", "Remove with backup")
+            dialog.add_response("permanent", "Remove without backup")
+            dialog.set_response_appearance(
+                "backup",
+                Adw.ResponseAppearance.SUGGESTED,
+            )
+            dialog.set_response_appearance(
+                "permanent",
+                Adw.ResponseAppearance.DESTRUCTIVE,
+            )
+            dialog.connect(
+                "response",
+                partial(
+                    self._on_analysis_dialog_response,
+                    application,
+                    analysis,
+                ),
+            )
+
         dialog.set_default_response("close")
         dialog.set_close_response("close")
-        dialog.connect(
-            "response",
-            partial(
-                self._on_analysis_dialog_response,
-                application,
-                analysis,
-            ),
-        )
         dialog.present(self)
 
         return GLib.SOURCE_REMOVE
@@ -497,6 +507,14 @@ class AppSweepWindow(Adw.ApplicationWindow):
         analysis: RemovalAnalysis,
         backup: BackupResult | None,
     ) -> None:
+        if analysis.protected:
+            GLib.idle_add(
+                self._show_message,
+                "Protected application",
+                analysis.protection_reason,
+            )
+            return
+
         package_result = self._removal_service.purge_package(application.package_name)
 
         if not package_result.success:

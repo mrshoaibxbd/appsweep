@@ -6,6 +6,7 @@ from pathlib import Path
 import apt
 
 from appsweep.models import InstalledApplication
+from appsweep.safety_policy import SafetyPolicy
 
 
 @dataclass(frozen=True, slots=True)
@@ -15,9 +16,14 @@ class RemovalAnalysis:
     additional_removals: tuple[str, ...]
     dependent_packages: tuple[str, ...]
     leftover_paths: tuple[Path, ...]
+    protected: bool = False
+    protection_reason: str = ""
 
 
 class RemovalAnalyzer:
+    def __init__(self) -> None:
+        self._safety_policy = SafetyPolicy()
+
     def analyze(self, application: InstalledApplication) -> RemovalAnalysis:
         cache = apt.Cache()
 
@@ -29,10 +35,16 @@ class RemovalAnalyzer:
         if not package.is_installed or package.installed is None:
             raise ValueError(f"Package '{application.package_name}' is not installed.")
 
-        simulated_removals = self._simulate_purge(application.package_name)
-        additional_removals = tuple(
-            name for name in simulated_removals if name != application.package_name
-        )
+        protection = self._safety_policy.evaluate(application.package_name)
+
+        if protection.protected:
+            simulated_removals: tuple[str, ...] = ()
+            additional_removals: tuple[str, ...] = ()
+        else:
+            simulated_removals = self._simulate_purge(application.package_name)
+            additional_removals = tuple(
+                name for name in simulated_removals if name != application.package_name
+            )
 
         return RemovalAnalysis(
             package_name=application.package_name,
@@ -40,6 +52,8 @@ class RemovalAnalyzer:
             additional_removals=additional_removals,
             dependent_packages=self._installed_reverse_dependencies(application.package_name),
             leftover_paths=self._find_leftovers(application),
+            protected=protection.protected,
+            protection_reason=protection.reason,
         )
 
     @staticmethod
