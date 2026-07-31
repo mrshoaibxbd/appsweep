@@ -1,0 +1,37 @@
+[project]
+name = "appsweep"
+version = "0.1.0"
+description = "Safe application removal and leftover cleanup for Ubuntu"
+requires-python = ">=3.12"
+authors = [
+    { name = "SHOAIB MAHMUD" }
+]
+keywords = [
+    "ubuntu",
+    "uninstaller",
+    "package-manager",
+    "cleanup",
+    "gtk"
+]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Environment :: X11 Applications :: GTK",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3"
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unused_ignores = true
