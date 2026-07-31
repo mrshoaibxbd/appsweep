@@ -4,7 +4,11 @@ from functools import partial
 from gi.repository import Adw, GLib, Gtk
 
 from appsweep.apt_scanner import AptScanner
-from appsweep.backup_manager import BackupManager, BackupResult
+from appsweep.backup_manager import (
+    BackupManager,
+    BackupResult,
+    BackupVerification,
+)
 from appsweep.models import InstalledApplication
 from appsweep.removal_analyzer import RemovalAnalysis, RemovalAnalyzer
 
@@ -163,6 +167,7 @@ class AppSweepWindow(Adw.ApplicationWindow):
     ) -> None:
         button.set_sensitive(False)
         button.set_icon_name("content-loading-symbolic")
+
         self._executor.submit(
             self._run_removal_analysis,
             application,
@@ -289,6 +294,7 @@ class AppSweepWindow(Adw.ApplicationWindow):
     ) -> None:
         try:
             result = self._backup_manager.create(application, analysis)
+            verification = self._backup_manager.verify(result)
         except Exception as error:
             GLib.idle_add(
                 self._show_message,
@@ -301,12 +307,14 @@ class AppSweepWindow(Adw.ApplicationWindow):
             self._show_backup_result,
             application,
             result,
+            verification,
         )
 
     def _show_backup_result(
         self,
         application: InstalledApplication,
         result: BackupResult,
+        verification: BackupVerification,
     ) -> bool:
         archive_text = (
             str(result.archive)
@@ -314,17 +322,64 @@ class AppSweepWindow(Adw.ApplicationWindow):
             else "No user-data archive was required."
         )
 
-        self._show_message(
-            f"Rollback backup created for {application.display_name}",
-            (
+        heading = (
+            f"Rollback backup verified for {application.display_name}"
+            if verification.valid
+            else f"Rollback backup failed verification for {application.display_name}"
+        )
+
+        dialog = Adw.AlertDialog(
+            heading=heading,
+            body=(
                 f"Backup directory\n{result.directory}\n\n"
                 f"User-data archive\n{archive_text}\n\n"
                 f"Removal manifest\n{result.manifest}\n\n"
+                f"Verification\n{verification.message}\n\n"
                 "No package or user data has been removed."
             ),
         )
+        dialog.add_response("close", "Close")
+
+        if verification.valid:
+            dialog.add_response("continue", "Continue")
+            dialog.set_response_appearance(
+                "continue",
+                Adw.ResponseAppearance.DESTRUCTIVE,
+            )
+            dialog.connect(
+                "response",
+                partial(
+                    self._on_verified_backup_response,
+                    application,
+                    result,
+                ),
+            )
+
+        dialog.set_default_response("close")
+        dialog.set_close_response("close")
+        dialog.present(self)
 
         return GLib.SOURCE_REMOVE
+
+    def _on_verified_backup_response(
+        self,
+        application: InstalledApplication,
+        result: BackupResult,
+        _dialog: Adw.AlertDialog,
+        response: str,
+    ) -> None:
+        if response != "continue":
+            return
+
+        self._show_message(
+            "Removal remains disabled",
+            (
+                f"The verified backup for {application.display_name} is stored at:\n\n"
+                f"{result.directory}\n\n"
+                "The next stage will add the privileged package-removal service. "
+                "No system changes have been made."
+            ),
+        )
 
     def _show_message(self, heading: str, body: str) -> bool:
         dialog = Adw.AlertDialog(
