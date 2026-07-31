@@ -9,6 +9,10 @@ from appsweep.backup_manager import (
     BackupResult,
     BackupVerification,
 )
+from appsweep.flatpak_removal_analyzer import (
+    FlatpakRemovalAnalysis,
+    FlatpakRemovalAnalyzer,
+)
 from appsweep.models import InstalledApplication, PackageBackend
 from appsweep.removal_analyzer import RemovalAnalysis, RemovalAnalyzer
 from appsweep.snap_removal_analyzer import SnapRemovalAnalysis, SnapRemovalAnalyzer
@@ -30,6 +34,7 @@ class AppSweepWindow(Adw.ApplicationWindow):
         self._scanner = ApplicationScanner()
         self._analyzer = RemovalAnalyzer()
         self._snap_analyzer = SnapRemovalAnalyzer()
+        self._flatpak_analyzer = FlatpakRemovalAnalyzer()
         self._backup_manager = BackupManager()
         self._removal_service = RemovalService()
         self._executor = ThreadPoolExecutor(max_workers=1)
@@ -177,7 +182,8 @@ class AppSweepWindow(Adw.ApplicationWindow):
             return
 
         if application.backend is PackageBackend.FLATPAK:
-            self._show_flatpak_review(application)
+            analysis = self._flatpak_analyzer.analyze(application)
+            self._show_flatpak_review(application, analysis)
             return
 
         button.set_sensitive(False)
@@ -192,9 +198,13 @@ class AppSweepWindow(Adw.ApplicationWindow):
     def _show_flatpak_review(
         self,
         application: InstalledApplication,
+        analysis: FlatpakRemovalAnalysis,
     ) -> None:
-        scope = (
-            application.installation_scope.title() if application.installation_scope else "Unknown"
+        scope = analysis.scope.title() if analysis.scope else "Unknown"
+        paths = (
+            "\n".join(str(path) for path in analysis.user_data_paths)
+            if analysis.user_data_paths
+            else "None detected"
         )
 
         dialog = Adw.AlertDialog(
@@ -202,16 +212,273 @@ class AppSweepWindow(Adw.ApplicationWindow):
             body=(
                 f"{application.summary or 'No application description is available.'}\n\n"
                 f"Package type\nFlatpak\n\n"
-                f"Application ID\n{application.package_name}\n\n"
+                f"Application ID\n{analysis.application_id}\n\n"
                 f"Version\n{application.version or 'Unknown'}\n\n"
                 f"Installation scope\n{scope}\n\n"
-                "Flatpak removal and data cleanup will be enabled in the next stage."
+                f"User-data paths\n{paths}"
             ),
         )
         dialog.add_response("close", "Close")
+        dialog.add_response("backup", "Remove with backup")
+        dialog.add_response("permanent", "Remove without backup")
+        dialog.set_response_appearance(
+            "backup",
+            Adw.ResponseAppearance.SUGGESTED,
+        )
+        dialog.set_response_appearance(
+            "permanent",
+            Adw.ResponseAppearance.DESTRUCTIVE,
+        )
+        dialog.set_default_response("close")
+        dialog.set_close_response("close")
+        dialog.connect(
+            "response",
+            partial(
+                self._on_flatpak_review_response,
+                application,
+                analysis,
+            ),
+        )
+        dialog.present(self)
+
+    def _on_flatpak_review_response(
+        self,
+        application: InstalledApplication,
+        analysis: FlatpakRemovalAnalysis,
+        _dialog: Adw.AlertDialog,
+        response: str,
+    ) -> None:
+        if response == "backup":
+            self._executor.submit(
+                self._run_flatpak_backup,
+                application,
+                analysis,
+            )
+        elif response == "permanent":
+            self._show_flatpak_permanent_warning(
+                application,
+                analysis,
+            )
+
+    def _run_flatpak_backup(
+        self,
+        application: InstalledApplication,
+        analysis: FlatpakRemovalAnalysis,
+    ) -> None:
+        apt_style_analysis = RemovalAnalysis(
+            package_name=analysis.application_id,
+            installed_size=0,
+            additional_removals=(),
+            dependent_packages=(),
+            leftover_paths=analysis.user_data_paths,
+        )
+
+        try:
+            result = self._backup_manager.create(
+                application,
+                apt_style_analysis,
+            )
+            verification = self._backup_manager.verify(result)
+        except Exception as error:
+            GLib.idle_add(
+                self._show_message,
+                "Unable to create rollback backup",
+                str(error),
+            )
+            return
+
+        GLib.idle_add(
+            self._show_flatpak_backup_result,
+            application,
+            analysis,
+            result,
+            verification,
+        )
+
+    def _show_flatpak_backup_result(
+        self,
+        application: InstalledApplication,
+        analysis: FlatpakRemovalAnalysis,
+        backup: BackupResult,
+        verification: BackupVerification,
+    ) -> bool:
+        heading = (
+            f"Rollback backup verified for {application.display_name}"
+            if verification.valid
+            else f"Backup verification failed for {application.display_name}"
+        )
+
+        dialog = Adw.AlertDialog(
+            heading=heading,
+            body=(
+                f"Backup directory\n{backup.directory}\n\n"
+                f"Verification\n{verification.message}\n\n"
+                "The backup will remain after removal."
+            ),
+        )
+        dialog.add_response("close", "Close")
+
+        if verification.valid:
+            dialog.add_response("remove", "Remove application")
+            dialog.set_response_appearance(
+                "remove",
+                Adw.ResponseAppearance.DESTRUCTIVE,
+            )
+            dialog.connect(
+                "response",
+                partial(
+                    self._on_flatpak_backup_response,
+                    application,
+                    analysis,
+                    backup,
+                ),
+            )
+
         dialog.set_default_response("close")
         dialog.set_close_response("close")
         dialog.present(self)
+
+        return GLib.SOURCE_REMOVE
+
+    def _on_flatpak_backup_response(
+        self,
+        application: InstalledApplication,
+        analysis: FlatpakRemovalAnalysis,
+        backup: BackupResult,
+        _dialog: Adw.AlertDialog,
+        response: str,
+    ) -> None:
+        if response != "remove":
+            return
+
+        self._executor.submit(
+            self._run_flatpak_removal,
+            application,
+            analysis,
+            backup,
+        )
+
+    def _show_flatpak_permanent_warning(
+        self,
+        application: InstalledApplication,
+        analysis: FlatpakRemovalAnalysis,
+    ) -> None:
+        paths = (
+            "\n".join(str(path) for path in analysis.user_data_paths)
+            if analysis.user_data_paths
+            else "No user-data directory was detected."
+        )
+
+        dialog = Adw.AlertDialog(
+            heading=f"Permanently remove {application.display_name}?",
+            body=(
+                "No rollback backup will be created.\n\n"
+                f"The Flatpak application will be uninstalled and these "
+                f"verified paths will be deleted:\n\n{paths}"
+            ),
+        )
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("remove", "Remove permanently")
+        dialog.set_response_appearance(
+            "remove",
+            Adw.ResponseAppearance.DESTRUCTIVE,
+        )
+        dialog.set_default_response("cancel")
+        dialog.set_close_response("cancel")
+        dialog.connect(
+            "response",
+            partial(
+                self._on_flatpak_permanent_response,
+                application,
+                analysis,
+            ),
+        )
+        dialog.present(self)
+
+    def _on_flatpak_permanent_response(
+        self,
+        application: InstalledApplication,
+        analysis: FlatpakRemovalAnalysis,
+        _dialog: Adw.AlertDialog,
+        response: str,
+    ) -> None:
+        if response != "remove":
+            return
+
+        self._executor.submit(
+            self._run_flatpak_removal,
+            application,
+            analysis,
+            None,
+        )
+
+    def _run_flatpak_removal(
+        self,
+        application: InstalledApplication,
+        analysis: FlatpakRemovalAnalysis,
+        backup: BackupResult | None,
+    ) -> None:
+        result = self._removal_service.remove_flatpak(
+            analysis.application_id,
+            analysis.scope,
+        )
+
+        if not result.success:
+            GLib.idle_add(
+                self._show_removal_failure,
+                application,
+                result,
+            )
+            return
+
+        leftovers = self._removal_service.remove_leftovers(analysis.user_data_paths)
+        self._removal_service.reset_flatpak_permissions(analysis.application_id)
+
+        GLib.idle_add(
+            self._show_flatpak_removal_success,
+            application,
+            result,
+            leftovers,
+            backup,
+        )
+
+    def _show_flatpak_removal_success(
+        self,
+        application: InstalledApplication,
+        result: PackageRemovalResult,
+        leftovers: LeftoverRemovalResult,
+        backup: BackupResult | None,
+    ) -> bool:
+        sections = [result.message]
+
+        if leftovers.removed:
+            sections.append(
+                "Deleted user-data paths\n" + "\n".join(str(path) for path in leftovers.removed)
+            )
+        else:
+            sections.append("Deleted user-data paths\nNone")
+
+        if leftovers.failed:
+            sections.append(
+                "Paths that could not be deleted\n"
+                + "\n".join(f"{path}: {message}" for path, message in leftovers.failed)
+            )
+
+        sections.append(
+            f"Rollback backup retained at\n{backup.directory}"
+            if backup is not None
+            else "No rollback backup was created."
+        )
+
+        dialog = Adw.AlertDialog(
+            heading=f"{application.display_name} removed",
+            body="\n\n".join(sections),
+        )
+        dialog.add_response("close", "Close")
+        dialog.connect("response", self._on_removal_result_closed)
+        dialog.present(self)
+
+        return GLib.SOURCE_REMOVE
 
     def _show_snap_removal_analysis(
         self,

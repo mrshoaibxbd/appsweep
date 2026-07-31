@@ -9,6 +9,9 @@ from pathlib import Path
 
 PACKAGE_PATTERN = re.compile(r"^[a-z0-9][a-z0-9+.-]*(?::[a-z0-9][a-z0-9-]*)?$")
 SNAP_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+FLATPAK_PATTERN = re.compile(
+    r"^[A-Za-z0-9][A-Za-z0-9_-]*(?:\.[A-Za-z0-9][A-Za-z0-9_-]*)+$"
+)
 
 LOCK_PATHS = (
     Path("/var/lib/dpkg/lock"),
@@ -119,6 +122,29 @@ def validate_snap_name(snap_name: str) -> None:
 
     if snap_name in PROTECTED_SNAPS or snap_name.startswith(PROTECTED_SNAP_PREFIXES):
         raise ValueError("AppSweep refuses to remove protected Snap components.")
+
+
+def validate_flatpak_id(application_id: str) -> None:
+    if not FLATPAK_PATTERN.fullmatch(application_id):
+        raise ValueError("Invalid Flatpak application ID.")
+
+
+def system_flatpak_is_installed(application_id: str) -> bool:
+    result = subprocess.run(
+        [
+            "/usr/bin/flatpak",
+            "--system",
+            "info",
+            "--app",
+            application_id,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=ENVIRONMENT,
+    )
+
+    return result.returncode == 0
 
 
 def package_is_installed(package_name: str) -> bool:
@@ -249,6 +275,54 @@ def remove_snap(snap_name: str, purge: bool) -> int:
     return 0
 
 
+def remove_system_flatpak(application_id: str) -> int:
+    validate_flatpak_id(application_id)
+
+    if not Path("/usr/bin/flatpak").is_file():
+        emit(False, "Flatpak is not installed.")
+        return 3
+
+    if not system_flatpak_is_installed(application_id):
+        emit(
+            False,
+            f"System Flatpak '{application_id}' is not installed.",
+        )
+        return 3
+
+    result = subprocess.run(
+        [
+            "/usr/bin/flatpak",
+            "--system",
+            "uninstall",
+            "--app",
+            "--assumeyes",
+            "--noninteractive",
+            application_id,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=ENVIRONMENT,
+    )
+
+    if result.returncode != 0:
+        emit(
+            False,
+            "Flatpak could not remove the system application.",
+            stdout=result.stdout,
+            stderr=result.stderr,
+            exit_code=result.returncode,
+        )
+        return result.returncode
+
+    emit(
+        True,
+        f"System Flatpak '{application_id}' was removed successfully.",
+        stdout=result.stdout,
+    )
+    return 0
+
+
 def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="appsweep-helper")
 
@@ -257,6 +331,10 @@ def parse_arguments() -> argparse.Namespace:
     operations.add_argument("--purge", metavar="PACKAGE")
     operations.add_argument("--remove-snap", metavar="SNAP")
     operations.add_argument("--purge-snap", metavar="SNAP")
+    operations.add_argument(
+        "--remove-system-flatpak",
+        metavar="APPLICATION_ID",
+    )
 
     return parser.parse_args()
 
@@ -267,7 +345,7 @@ def main() -> int:
         arguments = parse_arguments()
 
         if arguments.version:
-            emit(True, "AppSweep helper 0.2.0")
+            emit(True, "AppSweep helper 0.3.0")
             return 0
 
         if arguments.purge:
@@ -276,7 +354,10 @@ def main() -> int:
         if arguments.remove_snap:
             return remove_snap(arguments.remove_snap, purge=False)
 
-        return remove_snap(arguments.purge_snap, purge=True)
+        if arguments.purge_snap:
+            return remove_snap(arguments.purge_snap, purge=True)
+
+        return remove_system_flatpak(arguments.remove_system_flatpak)
     except (PermissionError, ValueError) as error:
         emit(False, str(error))
         return 2

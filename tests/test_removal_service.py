@@ -79,3 +79,28 @@ def test_read_helper_response(
     expected: dict[str, object],
 ) -> None:
     assert RemovalService._read_helper_response(output) == expected
+
+
+def test_remove_leftovers_allows_flatpak_data(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    home = tmp_path / "home"
+    target = home / ".var" / "app" / "org.example.App"
+    target.mkdir(parents=True)
+    (target / "settings.ini").write_text(
+        "enabled=true\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        Path,
+        "home",
+        classmethod(lambda cls: home),
+    )
+
+    result = RemovalService().remove_leftovers((target,))
+
+    assert result.removed == (target,)
+    assert result.failed == ()
+    assert not target.exists()

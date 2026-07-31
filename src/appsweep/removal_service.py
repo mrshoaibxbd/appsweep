@@ -104,6 +104,103 @@ class RemovalService:
             stderr=str(response.get("stderr", result.stderr)),
         )
 
+    def remove_flatpak(
+        self,
+        application_id: str,
+        scope: str,
+    ) -> PackageRemovalResult:
+        if scope == "user":
+            result = subprocess.run(
+                [
+                    "/usr/bin/flatpak",
+                    "--user",
+                    "uninstall",
+                    "--app",
+                    "--assumeyes",
+                    "--noninteractive",
+                    application_id,
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        elif scope == "system":
+            result = subprocess.run(
+                [
+                    "/usr/bin/pkexec",
+                    str(self.helper_path),
+                    "--remove-system-flatpak",
+                    application_id,
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        else:
+            return PackageRemovalResult(
+                success=False,
+                message="Unknown Flatpak installation scope.",
+                stdout="",
+                stderr="",
+            )
+
+        if result.returncode in (126, 127):
+            return PackageRemovalResult(
+                success=False,
+                message="Authentication was cancelled or denied.",
+                stdout=result.stdout,
+                stderr=result.stderr,
+            )
+
+        if scope == "system":
+            response = self._read_helper_response(result.stdout)
+
+            if response is None:
+                return PackageRemovalResult(
+                    success=False,
+                    message="The privileged helper returned an invalid response.",
+                    stdout=result.stdout,
+                    stderr=result.stderr,
+                )
+
+            return PackageRemovalResult(
+                success=bool(response.get("success")),
+                message=str(response.get("message", "Unknown helper response.")),
+                stdout=str(response.get("stdout", "")),
+                stderr=str(response.get("stderr", result.stderr)),
+            )
+
+        if result.returncode != 0:
+            return PackageRemovalResult(
+                success=False,
+                message="Flatpak could not remove the application.",
+                stdout=result.stdout,
+                stderr=result.stderr,
+            )
+
+        return PackageRemovalResult(
+            success=True,
+            message=(f"User Flatpak '{application_id}' was removed successfully."),
+            stdout=result.stdout,
+            stderr=result.stderr,
+        )
+
+    @staticmethod
+    def reset_flatpak_permissions(application_id: str) -> None:
+        if not Path("/usr/bin/flatpak").is_file():
+            return
+
+        subprocess.run(
+            [
+                "/usr/bin/flatpak",
+                "permission-reset",
+                application_id,
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
     def remove_leftovers(
         self,
         paths: tuple[Path, ...],
@@ -152,6 +249,7 @@ class RemovalService:
             home / ".local" / "share",
             home / ".local" / "state",
             home / "snap",
+            home / ".var" / "app",
         )
 
     def _validate_leftover_path(self, path: Path) -> None:
