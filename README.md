@@ -27,7 +27,9 @@ Required dependencies are installed automatically when the Debian package is ins
 
 ## Installation
 
-Download the latest `.deb` package from the GitHub Releases page.
+Download the latest Debian package from the [AppSweep Releases page](https://github.com/mrshoaibxbd/appsweep/releases/latest).
+
+For version 0.1.0, download [`appsweep_0.1.0_all.deb`](https://github.com/mrshoaibxbd/appsweep/releases/download/v0.1.0/appsweep_0.1.0_all.deb).
 
 Install it with:
 
