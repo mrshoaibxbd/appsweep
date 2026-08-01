@@ -12,3 +12,13 @@ dist/
 coverage.xml
 .DS_Store
 .vscode/
+
+# Debian package build artifacts
+obj-*/
+debian/.debhelper/
+debian/appsweep/
+debian/debhelper-build-stamp
+debian/files
+debian/*.substvars
+*.buildinfo
+*.changes

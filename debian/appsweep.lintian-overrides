@@ -1,0 +1,2 @@
+# AppSweep must query dpkg's installed-package state before permitting removal.
+appsweep: uses-dpkg-database-directly [usr/libexec/appsweep-helper]

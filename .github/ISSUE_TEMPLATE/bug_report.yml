@@ -1,0 +1,72 @@
+name: Bug report
+description: Report incorrect or unexpected AppSweep behavior
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Provide enough information to reproduce the problem safely.
+
+  - type: input
+    id: version
+    attributes:
+      label: AppSweep version
+      placeholder: 0.1.0
+    validations:
+      required: true
+
+  - type: input
+    id: ubuntu
+    attributes:
+      label: Ubuntu version
+      placeholder: Ubuntu 26.04 LTS
+    validations:
+      required: true
+
+  - type: dropdown
+    id: backend
+    attributes:
+      label: Package backend
+      options:
+        - APT
+        - Snap
+        - Flatpak
+        - Application startup
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Problem description
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open AppSweep
+        2. Select an application
+        3. Perform the action
+    validations:
+      required: true
+
+  - type: textarea
+    id: output
+    attributes:
+      label: Relevant output
+      render: shell
+
+  - type: checkboxes
+    id: changes
+    attributes:
+      label: System changes
+      options:
+        - label: A package was removed
+        - label: User data was removed
+        - label: No system changes occurred

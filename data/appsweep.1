@@ -1,0 +1,33 @@
+.TH APPSWEEP 1 "August 2026" "AppSweep 0.1.0" "User Commands"
+.SH NAME
+appsweep \- safely review and remove installed Ubuntu applications
+.SH SYNOPSIS
+.B appsweep
+.SH DESCRIPTION
+.B AppSweep
+is a graphical application for reviewing and removing software installed
+through APT, Snap, and Flatpak.
+.PP
+It analyzes package-removal effects, protects critical system components,
+detects supported application-data locations, and can create verified
+rollback backups before removal.
+.SH AUTHENTICATION
+Administrative package operations use PolicyKit and may display an
+authentication prompt.
+.SH FILES
+.TP
+.I ~/.local/share/appsweep/backups/
+Rollback backups created by AppSweep.
+.TP
+.I /usr/libexec/appsweep-helper
+Privileged helper invoked through PolicyKit.
+.SH BUGS
+Report bugs at:
+.UR https://github.com/mrshoaibxbd/appsweep/issues
+.UE
+.SH AUTHOR
+SHOAIB MAHMUD
+.UR https://shoaib.tech
+.UE
+.SH LICENSE
+GNU General Public License version 3 or later.

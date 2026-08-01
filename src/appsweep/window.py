@@ -15,12 +15,12 @@ from appsweep.flatpak_removal_analyzer import (
 )
 from appsweep.models import InstalledApplication, PackageBackend
 from appsweep.removal_analyzer import RemovalAnalysis, RemovalAnalyzer
-from appsweep.snap_removal_analyzer import SnapRemovalAnalysis, SnapRemovalAnalyzer
 from appsweep.removal_service import (
     LeftoverRemovalResult,
     PackageRemovalResult,
     RemovalService,
 )
+from appsweep.snap_removal_analyzer import SnapRemovalAnalysis, SnapRemovalAnalyzer
 
 
 class AppSweepWindow(Adw.ApplicationWindow):
