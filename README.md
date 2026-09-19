@@ -116,4 +116,4 @@ AppSweep is licensed under the GNU General Public License version 3 or later.
 
 **SHOAIB MAHMUD**
 
-Website: [shoaib.tech](https://shoaib.tech)
+Website: [shoaib.bd](https://shoaib.bd)
